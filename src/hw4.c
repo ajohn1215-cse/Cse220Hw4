@@ -10,11 +10,12 @@
 #define PORT_PLAYER1 2201
 #define PORT_PLAYER2 2202
 #define BUFFER_SIZE 1024
+#define MAX_SHIPS 5
 
 typedef enum {
     EMPTY = 0,
-    HIT = 'H',
-    MISS = 'M'
+    HIT = -1,
+    MISS = -2
 } CellState;
 
 typedef struct {
@@ -33,13 +34,13 @@ typedef struct {
 } Shape;
 
 const Shape base_shapes[] = {
-    {{ {0, 0}, {1, 0}, {2, 0}, {3, 0} }}, 
-    {{ {0, 0}, {0, 1}, {1, 0}, {1, 1} }}, 
-    {{ {0, 0}, {1, 0}, {2, 0}, {2, 1} }}, 
-    {{ {0, 0}, {1, 0}, {2, 0}, {2, -1} }},
-    {{ {0, 0}, {0, 1}, {1, 1}, {1, 2} }}, 
-    {{ {0, 1}, {0, 0}, {1, 1}, {1, 2} }}, 
-    {{ {0, 0}, {1, -1}, {1, 0}, {1, 1} }} 
+    {{{0, 0}, {1, 0}, {2, 0}, {3, 0}}}, 
+    {{{0, 0}, {0, 1}, {1, 0}, {1, 1}}}, 
+    {{{0, 0}, {1, 0}, {2, 0}, {2, 1}}}, 
+    {{{0, 0}, {1, 0}, {2, 0}, {2, -1}}}, 
+    {{{0, 0}, {0, 1}, {1, 1}, {1, 2}}}, 
+    {{{0, 1}, {0, 0}, {1, 1}, {1, 2}}}, 
+    {{{0, 0}, {1, -1}, {1, 0}, {1, 1}}} 
 };
 
 Board *create_board(int width, int height) {
@@ -89,7 +90,16 @@ void print_board(const Board *board) {
     printf("Current Board State:\n");
     for (int i = 0; i < board->height; i++) {
         for (int j = 0; j < board->width; j++) {
-            printf("%2d ", board->grid[i][j]);
+            int cell = board->grid[i][j];
+            if (cell == EMPTY) {
+                printf(" . ");
+            } else if (cell == HIT) {
+                printf(" H ");
+            } else if (cell == MISS) {
+                printf(" M ");
+            } else {
+                printf("%2d ", cell);
+            }
         }
         printf("\n");
     }
@@ -101,12 +111,18 @@ Coordinate rotate(Coordinate coord) {
 }
 
 void calculate_piece_coordinates(int pieceIndex, int rotationCount, int baseRow, int baseCol, Coordinate pieceCoords[4]) {
-    const Shape *selectedShape = &base_shapes[pieceIndex]; 
+    if (pieceIndex < 0 || pieceIndex >= sizeof(base_shapes) / sizeof(base_shapes[0]) ||
+        rotationCount < 0 || rotationCount >= 4) {
+        fprintf(stderr, "Invalid shape index or rotation count\n");
+        return;
+    }
+
+    const Shape *selectedShape = &base_shapes[pieceIndex];
     for (int index = 0; index < 4; index++) {
         Coordinate currentCoord = selectedShape->blocks[index];
 
         for (int r = 0; r < rotationCount; r++) {
-            currentCoord = rotate(currentCoord);  
+            currentCoord = rotate(currentCoord);
         }
 
         pieceCoords[index].x = baseRow + currentCoord.x;
@@ -115,23 +131,25 @@ void calculate_piece_coordinates(int pieceIndex, int rotationCount, int baseRow,
 }
 
 int insert_piece_on_board(Board *gameBoard, int shapeIndex, int numRotations, int startRow, int startCol, int pieceId) {
+    if (shapeIndex < 0 || shapeIndex >= sizeof(base_shapes) / sizeof(base_shapes[0]) ||
+        numRotations < 0 || numRotations >= 4) {
+        fprintf(stderr, "Invalid shape index or rotation count\n");
+        return -1; 
+    }
+
     Coordinate pieceCoords[4];
-    calculate_piece_coordinates(shapeIndex, numRotations, startRow, startCol, pieceCoords);  
+    calculate_piece_coordinates(shapeIndex, numRotations, startRow, startCol, pieceCoords);
 
     for (int idx = 0; idx < 4; idx++) {
         int row = pieceCoords[idx].x;
         int col = pieceCoords[idx].y;
 
-        printf("[Server] Checking block %d of piece %d at (%d, %d)\n", idx, shapeIndex, row, col);
-
         if (row < 0 || row >= gameBoard->height || col < 0 || col >= gameBoard->width) {
-            printf("[Server] Block %d of piece %d is out of bounds at (%d, %d)\n", idx, shapeIndex, row, col);
-            return 302;  
+            return 302;
         }
 
         if (gameBoard->grid[row][col] != EMPTY) {
-            printf("[Server] Block %d of piece %d overlaps at (%d, %d)\n", idx, shapeIndex, row, col);
-            return 303;  
+            return 303;
         }
     }
 
@@ -139,42 +157,10 @@ int insert_piece_on_board(Board *gameBoard, int shapeIndex, int numRotations, in
         int row = pieceCoords[idx].x;
         int col = pieceCoords[idx].y;
         gameBoard->grid[row][col] = pieceId;
-        printf("[Server] Placed block %d of piece %d at (%d, %d)\n", idx, shapeIndex, row, col);
     }
 
-    return 0; 
+    return 0;
 }
-
-int is_within_bounds(int row, int col, Board *gameBoard) {
-    return row >= 0 && row < gameBoard->height && col >= 0 && col < gameBoard->width;
-}
-
-int is_cell_empty(Board *gameBoard, int row, int col) {
-    return gameBoard->grid[row][col] == EMPTY;
-}
-
-int check_valid_piece_placement(Board *gameBoard, int shapeIndex, int numRotations, int baseRow, int baseCol) {
-    Coordinate pieceCoords[4];
-    calculate_piece_coordinates(shapeIndex, numRotations, baseRow, baseCol, pieceCoords);
-
-    for (int blockIdx = 0; blockIdx < 4; blockIdx++) {
-        int row = pieceCoords[blockIdx].x;
-        int col = pieceCoords[blockIdx].y;
-
-        if (!is_within_bounds(row, col, gameBoard)) {
-            printf("Error: Block %d out of bounds at (%d, %d)\n", blockIdx, row, col);
-            return 302;  
-        }
-
-        if (!is_cell_empty(gameBoard, row, col)) {
-            printf("Error: Block %d overlaps at (%d, %d)\n", blockIdx, row, col);
-            return 303; 
-        }
-    }
-
-    return 0;  
-}
-
 
 bool validate_packet_header(const char *packet) {
     return strncmp(packet, "I ", 2) == 0;
@@ -190,27 +176,32 @@ int count_packet_parameters(const char *packet) {
     return count;
 }
 
-int parse_piece(const char *packet, int offset, int *piece_type, int *rotation, int *ref_row, int *ref_col) {
-    return sscanf(packet + offset, "%d %d %d %d", piece_type, rotation, ref_row, ref_col);
+int parse_piece(const char *packet, int *offset, int *piece_type, int *rotation, int *ref_row, int *ref_col) {
+    int parsed = sscanf(packet + *offset, "%d %d %d %d", piece_type, rotation, ref_row, ref_col);
+    if (parsed == 4) {
+        *offset += snprintf(NULL, 0, "%d %d %d %d ", *piece_type, *rotation, *ref_row, *ref_col);
+    }
+    return parsed;
 }
 
 int validate_piece_parameters(int piece_type, int rotation) {
-    if (piece_type < 1 || piece_type > 7) {
-        return 300; 
+    if (piece_type < 1 || piece_type > sizeof(base_shapes) / sizeof(base_shapes[0])) {
+        return 300;
     }
     if (rotation < 1 || rotation > 4) {
-        return 301; 
+        return 301;
     }
-    return 0; 
+    return 0;
 }
 
 int validate_and_place_pieces(Board *temp_board, const char *packet, int num_pieces, int *lowest_error) {
-    int offset = 2; 
+    int offset = 2;
     for (int i = 0; i < num_pieces; i++) {
         int piece_type, rotation, ref_row, ref_col;
-        if (parse_piece(packet, offset, &piece_type, &rotation, &ref_row, &ref_col) != 4) {
+        int parsed = parse_piece(packet, &offset, &piece_type, &rotation, &ref_row, &ref_col);
+        if (parsed != 4) {
             if (*lowest_error == 0 || *lowest_error > 201) {
-                *lowest_error = 201; 
+                *lowest_error = 201;
             }
             continue;
         }
@@ -220,33 +211,16 @@ int validate_and_place_pieces(Board *temp_board, const char *packet, int num_pie
             *lowest_error = param_error;
         }
 
-        piece_type--; 
-        rotation--;   
+        piece_type--;
+        rotation--;
 
-        int placement_error = check_valid_piece_placement(temp_board, piece_type, rotation, ref_row, ref_col);
+        int placement_error = insert_piece_on_board(temp_board, piece_type, rotation, ref_row, ref_col, i + 1);
         if (placement_error && (*lowest_error == 0 || *lowest_error > placement_error)) {
             *lowest_error = placement_error;
         }
-
-        offset += snprintf(NULL, 0, "%d %d %d %d ", piece_type + 1, rotation + 1, ref_row, ref_col);
     }
 
     return *lowest_error;
-}
-
-void place_pieces_on_board(Board *board, const char *packet, int num_pieces) {
-    int offset = 2; 
-    for (int i = 0; i < num_pieces; i++) {
-        int piece_type, rotation, ref_row, ref_col;
-        parse_piece(packet, offset, &piece_type, &rotation, &ref_row, &ref_col);
-
-        piece_type--; 
-        rotation--;   
-
-        insert_piece_on_board(board, piece_type, rotation, ref_row, ref_col, i + 1);
-
-        offset += snprintf(NULL, 0, "%d %d %d %d ", piece_type + 1, rotation + 1, ref_row, ref_col);
-    }
 }
 
 int process_initialization_packet(int connectionFd, Board *gameBoard, const char *initPacket) {
@@ -254,12 +228,12 @@ int process_initialization_packet(int connectionFd, Board *gameBoard, const char
     int lowestErrorCode = 0;
 
     if (!validate_packet_header(initPacket)) {
-        send(connectionFd, "E 101", strlen("E 101"), 0); 
+        send(connectionFd, "E 101", strlen("E 101"), 0);
         return -1;
     }
 
     if (count_packet_parameters(initPacket) != expectedPieces * 4) {
-        send(connectionFd, "E 201", strlen("E 201"), 0); 
+        send(connectionFd, "E 201", strlen("E 201"), 0);
         return -1;
     }
 
@@ -271,111 +245,76 @@ int process_initialization_packet(int connectionFd, Board *gameBoard, const char
 
     validate_and_place_pieces(tempBoard, initPacket, expectedPieces, &lowestErrorCode);
 
-    free_board(tempBoard); 
-
     if (lowestErrorCode != 0) {
         char errorMessage[BUFFER_SIZE];
         snprintf(errorMessage, sizeof(errorMessage), "E %d", lowestErrorCode);
         send(connectionFd, errorMessage, strlen(errorMessage), 0);
+        free_board(tempBoard);
         return -1;
     }
 
-    place_pieces_on_board(gameBoard, initPacket, expectedPieces);
+    // Copy the valid placements to the actual game board
+    for (int i = 0; i < gameBoard->height; i++) {
+        memcpy(gameBoard->grid[i], tempBoard->grid[i], gameBoard->width * sizeof(int));
+    }
+
+    free_board(tempBoard);
 
     send(connectionFd, "A", strlen("A"), 0);
     return 0;
 }
 
 bool is_ship_sunk(Board *board, int piece_id) {
-    int shipFound = 0; 
     for (int i = 0; i < board->height; i++) {
         for (int j = 0; j < board->width; j++) {
-            // Check if a part of the ship exists
             if (board->grid[i][j] == piece_id) {
-                shipFound = 1;
-                break;  
+                return false;
             }
         }
-        if (shipFound) {
-            break;  
-        }
     }
-
-    return !shipFound;
+    return true;
 }
 
-void update_ship_counts(Board *board, int *remaining_ships, int max_ships) {
-    *remaining_ships = 0; 
-
-    for (int i = 0; i < board->height; i++) {
-        for (int j = 0; j < board->width; j++) {
-            int cell = board->grid[i][j];
-
-            if (cell >= 1 && cell <= max_ships) {
-                (*remaining_ships)++;  
+void update_sunk_ships(bool sunk_ships[], Board *board) {
+    for (int ship_id = 1; ship_id <= MAX_SHIPS; ship_id++) {
+        if (!sunk_ships[ship_id - 1]) {
+            if (is_ship_sunk(board, ship_id)) {
+                sunk_ships[ship_id - 1] = true;
             }
         }
     }
 }
 
-int get_remaining_ships(Board *board, int maxShips) {
-    int remaining_ships = 0;
-
-    for (int i = 0; i < board->height; i++) {
-        for (int j = 0; j < board->width; j++) {
-            int cell = board->grid[i][j];
-      
-            if (cell >= 1 && cell <= maxShips) {
-                remaining_ships++; 
-            }
+int get_remaining_ships(bool sunk_ships[]) {
+    int remaining = 0;
+    for (int i = 0; i < MAX_SHIPS; i++) {
+        if (!sunk_ships[i]) {
+            remaining++;
         }
     }
-
-    return remaining_ships;
-}
-
-
-
-typedef struct Row {
-    char *data;
-    struct Row *next;
-} Row;
-
-Row *allocate_grid(int width, int height) {
-    Row *history = NULL;
-    Row *current_row = NULL;
-
-    for (int i = 0; i < height; i++) {
-        Row *new_row = malloc(sizeof(Row));
-        if (!new_row) {
-            return NULL;
-        }
-
-        new_row->data = malloc(width * sizeof(char));
-        if (!new_row->data) {
-            free(new_row);
-            return NULL;
-        }
-
-        for (int j = 0; j < width; j++) {
-            new_row->data[j] = 0;
-        }
-
-        new_row->next = NULL;
-
-        if (history == NULL) {
-            history = new_row;
-        } else {
-            current_row->next = new_row;
-        }
-
-        current_row = new_row;
-    }
-    return history;
+    return remaining;
 }
 
 char **initialize_shot_history(int width, int height) {
-    return allocate_grid(width, height);
+    char **history = malloc(height * sizeof(char *));
+    if (!history) {
+        perror("Failed to allocate shot history");
+        exit(EXIT_FAILURE);
+    }
+
+    for (int i = 0; i < height; i++) {
+        history[i] = calloc(width, sizeof(char));
+        if (!history[i]) {
+            perror("Failed to allocate shot history row");
+            for (int j = 0; j < i; j++) {
+                free(history[j]);
+            }
+            free(history);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    return history;
 }
 
 void free_shot_history(char **history, int height) {
@@ -390,48 +329,45 @@ void free_shot_history(char **history, int height) {
 bool parse_shoot_packet(const char *packet, int *row, int *col) {
     char extra;
     if (sscanf(packet, "S %d %d %c", row, col, &extra) != 2) {
-        return false; 
+        return false;
     }
     return true;
 }
 
 int validate_shot_coordinates(int row, int col, const Board *board, char **shot_history) {
     if (row < 0 || row >= board->height || col < 0 || col >= board->width) {
-        return 400; 
+        return 400;
     }
     if (shot_history[row][col] != EMPTY) {
-        return 401; 
+        return 401;
     }
-    return 0; 
+    return 0;
 }
 
-char process_shot(Board *opponent_board, char **shot_history, int row, int col, int *remaining_ships) {
+char process_shot(Board *opponent_board, char **shot_history, int row, int col, bool sunk_ships[]) {
     int piece_id = opponent_board->grid[row][col];
     char shot_result;
 
-    if (piece_id != EMPTY) {
-        shot_result = HIT;
-        shot_history[row][col] = HIT;
-        opponent_board->grid[row][col] = HIT; 
+    if (piece_id > 0) {
+        shot_result = 'H';
+        shot_history[row][col] = 'H';
+        opponent_board->grid[row][col] = HIT;
 
-        if (is_ship_sunk(opponent_board, piece_id)) {
-            (*remaining_ships)--; 
-        }
+        update_sunk_ships(sunk_ships, opponent_board);
     } else {
-
-        shot_result = MISS;
-        shot_history[row][col] = MISS;
+        shot_result = 'M';
+        shot_history[row][col] = 'M';
+        opponent_board->grid[row][col] = MISS;
     }
 
     return shot_result;
 }
 
-int process_shoot_action(int connectionFd, Board *opponentBoard, char **shotHistory, int *remainingShips, int opponentConnectionFd, const char *shootPacket) {
+int process_shoot_action(int connectionFd, Board *opponentBoard, char **shotHistory, bool sunk_ships[], int opponentConnectionFd, const char *shootPacket) {
     int targetRow, targetCol;
 
-
     if (!parse_shoot_packet(shootPacket, &targetRow, &targetCol)) {
-        send(connectionFd, "E 202", strlen("E 202"), 0); 
+        send(connectionFd, "E 202", strlen("E 202"), 0);
         return -1;
     }
 
@@ -443,30 +379,30 @@ int process_shoot_action(int connectionFd, Board *opponentBoard, char **shotHist
         return -1;
     }
 
-    char shotOutcome = process_shot(opponentBoard, shotHistory, targetRow, targetCol, remainingShips);
+    char shotOutcome = process_shot(opponentBoard, shotHistory, targetRow, targetCol, sunk_ships);
+    int remaining_ships = get_remaining_ships(sunk_ships);
 
     char response[BUFFER_SIZE];
-    snprintf(response, sizeof(response), "R %d %c", *remainingShips, shotOutcome);
+    snprintf(response, sizeof(response), "R %d %c", remaining_ships, shotOutcome);
     send(connectionFd, response, strlen(response), 0);
 
-    if (*remainingShips == 0) {
-        send(opponentConnectionFd, "H 0", strlen("H 0"), 0); 
-        recv(opponentConnectionFd, response, BUFFER_SIZE, 0); 
-        send(connectionFd, "H 1", strlen("H 1"), 0); 
-        return 1; 
+    if (remaining_ships == 0) {
+        send(opponentConnectionFd, "H 0", strlen("H 0"), 0);
+        // Wait for acknowledgment
+        recv(opponentConnectionFd, response, BUFFER_SIZE, 0);
+        send(connectionFd, "H 1", strlen("H 1"), 0);
+        return 1;
     }
 
-    return 0; 
+    return 0;
 }
 
 void append_shot_entry(char *response, char shot, int row, int col) {
-
     int len = strlen(response);
     snprintf(response + len, BUFFER_SIZE - len, " %c %d %d", shot, row, col);
 }
 
 void construct_query_response(char **shot_history, const Board *opponent_board, int remaining_ships, char *response) {
-
     snprintf(response, BUFFER_SIZE, "G %d", remaining_ships);
 
     for (int i = 0; i < opponent_board->height; i++) {
@@ -478,40 +414,15 @@ void construct_query_response(char **shot_history, const Board *opponent_board, 
     }
 }
 
-void handle_query_packet(int conn_fd, char **shot_history, Board *opponent_board) {
-    int remaining_ships = get_remaining_ships(opponent_board, 5);
-    char response[BUFFER_SIZE] = {0}; 
+void handle_query_packet(int conn_fd, char **shot_history, Board *opponent_board, bool sunk_ships[]) {
+    int remaining_ships = get_remaining_ships(sunk_ships);
+    char response[BUFFER_SIZE] = {0};
     construct_query_response(shot_history, opponent_board, remaining_ships, response);
 
     send(conn_fd, response, strlen(response), 0);
 }
 
-
-void notify_player(int conn_fd, const char *message) {
-    if (send(conn_fd, message, strlen(message), 0) == -1) {
-        perror("[Server] Failed to notify player");
-    }
-}
-
-void wait_for_acknowledgment(int conn_fd) {
-    char buffer[BUFFER_SIZE];
-    if (recv(conn_fd, buffer, BUFFER_SIZE, 0) <= 0) {
-        perror("[Server] Failed to receive acknowledgment");
-    }
-}
-
-void handle_forfeit_packet(int forfeiting_player_fd, int opponent_player_fd) {
-
-    notify_player(forfeiting_player_fd, "H 0");
-
-    wait_for_acknowledgment(forfeiting_player_fd);
-
-    notify_player(opponent_player_fd, "H 1");
-
-    printf("[Server] Forfeit handled. Player %d forfeited, Player %d wins.\n", forfeiting_player_fd, opponent_player_fd);
-}
-
-bool wait_for_begin_packet(int conn_fd, int *board_width, int *board_height, int opponent_fd) {
+bool wait_for_begin_packet(int conn_fd, int *board_width, int *board_height, int opponent_fd, bool is_player1) {
     char buffer[BUFFER_SIZE];
     while (true) {
         memset(buffer, 0, BUFFER_SIZE);
@@ -523,15 +434,26 @@ bool wait_for_begin_packet(int conn_fd, int *board_width, int *board_height, int
         buffer[bytes_received] = '\0';
 
         if (strncmp(buffer, "B", 1) == 0) {
-            char remaining_chars;
-            int parsed = sscanf(buffer, "B %d %d%c", board_width, board_height, &remaining_chars);
-            if (parsed == 2 && *board_width >= 10 && *board_height >= 10) {
-                send(conn_fd, "A", strlen("A"), 0);
-                printf("[Server] Valid Begin packet received. Board size: %dx%d\n", *board_width, *board_height);
-                return true;
+            if (is_player1) {
+                char remaining_chars;
+                int parsed = sscanf(buffer, "B %d %d%c", board_width, board_height, &remaining_chars);
+                if (parsed == 2 && *board_width >= 10 && *board_height >= 10) {
+                    send(conn_fd, "A", strlen("A"), 0);
+                    printf("[Server] Valid Begin packet received. Board size: %dx%d\n", *board_width, *board_height);
+                    return true;
+                } else {
+                    send(conn_fd, "E 200", strlen("E 200"), 0);
+                    fprintf(stderr, "[Server] Invalid board dimensions or malformed Begin packet\n");
+                }
             } else {
-                send(conn_fd, "E 200", strlen("E 200"), 0);
-                fprintf(stderr, "[Server] Invalid board dimensions or malformed Begin packet\n");
+                if (strcmp(buffer, "B") == 0 || strcmp(buffer, "B\n") == 0) {
+                    send(conn_fd, "A", strlen("A"), 0);
+                    printf("[Server] Valid Begin packet received from Player 2.\n");
+                    return true;
+                } else {
+                    send(conn_fd, "E 200", strlen("E 200"), 0);
+                    fprintf(stderr, "[Server] Invalid Begin packet format for Player 2\n");
+                }
             }
         } else if (strcmp(buffer, "F") == 0 || strcmp(buffer, "F\n") == 0) {
             send(conn_fd, "H 0", strlen("H 0"), 0);
@@ -571,9 +493,7 @@ void wait_for_initialize_packet(int conn_fd, Board *player_board, int opponent_f
     }
 }
 
-
-
-bool process_turn(int conn_fd, Board *opponent_board, char **shot_history, int *remaining_ships, int opponent_fd) {
+bool process_turn(int conn_fd, Board *opponent_board, char **shot_history, bool sunk_ships[], int opponent_fd) {
     char buffer[BUFFER_SIZE];
     memset(buffer, 0, BUFFER_SIZE);
     int bytes_received = recv(conn_fd, buffer, BUFFER_SIZE, 0);
@@ -583,16 +503,16 @@ bool process_turn(int conn_fd, Board *opponent_board, char **shot_history, int *
         return false;
     }
 
+    buffer[bytes_received] = '\0';
+
     if (strncmp(buffer, "S ", 2) == 0) {
-        int result = process_shoot_action(conn_fd, opponent_board, shot_history, remaining_ships, opponent_fd, buffer);
+        int result = process_shoot_action(conn_fd, opponent_board, shot_history, sunk_ships, opponent_fd, buffer);
         if (result == 1) {
-            send(conn_fd, "H 1", strlen("H 1"), 0);
-            send(opponent_fd, "H 0", strlen("H 0"), 0);
             printf("[Server] Game over! Player wins.\n");
             return false; // End game
         }
     } else if (strcmp(buffer, "Q") == 0 || strcmp(buffer, "Q\n") == 0) {
-        handle_query_packet(conn_fd, shot_history, opponent_board);
+        handle_query_packet(conn_fd, shot_history, opponent_board, sunk_ships);
     } else if (strcmp(buffer, "F") == 0 || strcmp(buffer, "F\n") == 0) {
         send(conn_fd, "H 0", strlen("H 0"), 0);
         send(opponent_fd, "H 1", strlen("H 1"), 0);
@@ -605,14 +525,14 @@ bool process_turn(int conn_fd, Board *opponent_board, char **shot_history, int *
     return true;
 }
 
-void manage_game_session(int player1ConnectionFd, int player2ConnectionFd) {
+void game_session(int player1ConnectionFd, int player2ConnectionFd) {
     int boardWidth, boardHeight;
 
     printf("[Server] Awaiting 'Begin' packet from Player 1...\n");
-    if (!wait_for_begin_packet(player1ConnectionFd, &boardWidth, &boardHeight, player2ConnectionFd)) return;
+    if (!wait_for_begin_packet(player1ConnectionFd, &boardWidth, &boardHeight, player2ConnectionFd, true)) return;
 
     printf("[Server] Awaiting 'Begin' packet from Player 2...\n");
-    if (!wait_for_begin_packet(player2ConnectionFd, &boardWidth, &boardHeight, player1ConnectionFd)) return;
+    if (!wait_for_begin_packet(player2ConnectionFd, &boardWidth, &boardHeight, player1ConnectionFd, false)) return;
 
     Board *player1Board = create_board(boardWidth, boardHeight);
     Board *player2Board = create_board(boardWidth, boardHeight);
@@ -620,8 +540,8 @@ void manage_game_session(int player1ConnectionFd, int player2ConnectionFd) {
     char **player1ShotHistory = initialize_shot_history(boardWidth, boardHeight);
     char **player2ShotHistory = initialize_shot_history(boardWidth, boardHeight);
 
-    int player1RemainingShips = get_remaining_ships(player2Board, 5); 
-    int player2RemainingShips = get_remaining_ships(player1Board, 5); 
+    bool player1SunkShips[MAX_SHIPS] = {false};
+    bool player2SunkShips[MAX_SHIPS] = {false};
 
     printf("[Server] Awaiting 'Initialize' packet from Player 1...\n");
     wait_for_initialize_packet(player1ConnectionFd, player1Board, player2ConnectionFd);
@@ -634,11 +554,11 @@ void manage_game_session(int player1ConnectionFd, int player2ConnectionFd) {
     bool isGameActive = true;
     while (isGameActive) {
         printf("[Server] Player 1's turn...\n");
-        isGameActive = process_turn(player1ConnectionFd, player2Board, player1ShotHistory, &player2RemainingShips, player2ConnectionFd);
+        isGameActive = process_turn(player1ConnectionFd, player2Board, player1ShotHistory, player2SunkShips, player2ConnectionFd);
         if (!isGameActive) break;
 
         printf("[Server] Player 2's turn...\n");
-        isGameActive = process_turn(player2ConnectionFd, player1Board, player2ShotHistory, &player1RemainingShips, player1ConnectionFd);
+        isGameActive = process_turn(player2ConnectionFd, player1Board, player2ShotHistory, player1SunkShips, player1ConnectionFd);
     }
 
     printf("[Server] Game over. Cleaning up resources...\n");
@@ -648,8 +568,6 @@ void manage_game_session(int player1ConnectionFd, int player2ConnectionFd) {
     free_shot_history(player1ShotHistory, boardHeight);
     free_shot_history(player2ShotHistory, boardHeight);
 }
-
-
 
 int setup_socket(int port) {
     int listen_fd;
@@ -711,7 +629,7 @@ int main() {
     int conn_fd1 = accept_connection(listen_fd1, "Player 1");
     int conn_fd2 = accept_connection(listen_fd2, "Player 2");
 
-    manage_game_session(conn_fd1, conn_fd2);
+    game_session(conn_fd1, conn_fd2);
 
     close(conn_fd1);
     close(conn_fd2);
