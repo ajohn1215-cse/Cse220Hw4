@@ -185,7 +185,7 @@ int parse_piece(const char *packet, int *offset, int *piece_type, int *rotation,
 }
 
 int validate_piece_parameters(int piece_type, int rotation) {
-    if (piece_type < 1 || piece_type > sizeof(base_shapes) / sizeof(base_shapes[0])) {
+    if (piece_type < 1 || piece_type > 7) {
         return 300;
     }
     if (rotation < 1 || rotation > 4) {
@@ -194,19 +194,72 @@ int validate_piece_parameters(int piece_type, int rotation) {
     return 0;
 }
 
-int validate_and_place_pieces(Board *temp_board, const char *packet, int num_pieces, int *lowest_error) {
-    int offset = 2;
-    for (int i = 0; i < num_pieces; i++) {
-        int piece_type, rotation, ref_row, ref_col;
-        int parsed = parse_piece(packet, &offset, &piece_type, &rotation, &ref_row, &ref_col);
-        if (parsed != 4) {
-            if (*lowest_error == 0 || *lowest_error > 201) {
-                *lowest_error = 201;
-            }
-            continue;
+int check_valid_piece_placement(Board *gameBoard, int shapeIndex, int numRotations, int startRow, int startCol) {
+    if (shapeIndex < 0 || shapeIndex >= sizeof(base_shapes) / sizeof(base_shapes[0]) ||
+        numRotations < 0 || numRotations >= 4) {
+        fprintf(stderr, "Invalid shape index or rotation count\n");
+        return -1; 
+    }
+
+    Coordinate pieceCoords[4];
+    calculate_piece_coordinates(shapeIndex, numRotations, startRow, startCol, pieceCoords);
+
+    for (int idx = 0; idx < 4; idx++) {
+        int row = pieceCoords[idx].x;
+        int col = pieceCoords[idx].y;
+
+        if (row < 0 || row >= gameBoard->height || col < 0 || col >= gameBoard->width) {
+            return 302;
         }
 
+        if (gameBoard->grid[row][col] != EMPTY) {
+            return 303;
+        }
+    }
+
+    return 0; 
+}
+
+int validate_and_place_pieces(Board *temp_board, const char *packet, int num_pieces, int *lowest_error) {
+    int offset = 2; 
+    char *end_ptr;
+    for (int i = 0; i < num_pieces; i++) {
+        int piece_type, rotation, ref_row, ref_col;
+
+        piece_type = strtol(packet + offset, &end_ptr, 10);
+        if (packet + offset == end_ptr) {
+            if (*lowest_error == 0 || *lowest_error > 201) *lowest_error = 201;
+            break;
+        }
+        offset = end_ptr - packet;
+        while (isspace(packet[offset])) offset++;
+
+        rotation = strtol(packet + offset, &end_ptr, 10);
+        if (packet + offset == end_ptr) {
+            if (*lowest_error == 0 || *lowest_error > 201) *lowest_error = 201;
+            break;
+        }
+        offset = end_ptr - packet;
+        while (isspace(packet[offset])) offset++;
+
+        ref_row = strtol(packet + offset, &end_ptr, 10);
+        if (packet + offset == end_ptr) {
+            if (*lowest_error == 0 || *lowest_error > 201) *lowest_error = 201;
+            break;
+        }
+        offset = end_ptr - packet;
+        while (isspace(packet[offset])) offset++;
+
+        ref_col = strtol(packet + offset, &end_ptr, 10);
+        if (packet + offset == end_ptr) {
+            if (*lowest_error == 0 || *lowest_error > 201) *lowest_error = 201;
+            break;
+        }
+        offset = end_ptr - packet;
+        while (isspace(packet[offset])) offset++;
+
         int param_error = validate_piece_parameters(piece_type, rotation);
+
         if (param_error && (*lowest_error == 0 || *lowest_error > param_error)) {
             *lowest_error = param_error;
         }
@@ -214,14 +267,21 @@ int validate_and_place_pieces(Board *temp_board, const char *packet, int num_pie
         piece_type--;
         rotation--;
 
-        int placement_error = insert_piece_on_board(temp_board, piece_type, rotation, ref_row, ref_col, i + 1);
+        int placement_error = check_valid_piece_placement(temp_board, piece_type, rotation, ref_row, ref_col);
+
         if (placement_error && (*lowest_error == 0 || *lowest_error > placement_error)) {
             *lowest_error = placement_error;
+        }
+       
+        if (placement_error == 0 && param_error == 0) {
+            insert_piece_on_board(temp_board, piece_type, rotation, ref_row, ref_col, i + 1);
         }
     }
 
     return *lowest_error;
 }
+
+
 
 int process_initialization_packet(int connectionFd, Board *gameBoard, const char *initPacket) {
     const int expectedPieces = 5;
@@ -253,7 +313,6 @@ int process_initialization_packet(int connectionFd, Board *gameBoard, const char
         return -1;
     }
 
-    // Copy the valid placements to the actual game board
     for (int i = 0; i < gameBoard->height; i++) {
         memcpy(gameBoard->grid[i], tempBoard->grid[i], gameBoard->width * sizeof(int));
     }
@@ -263,6 +322,7 @@ int process_initialization_packet(int connectionFd, Board *gameBoard, const char
     send(connectionFd, "A", strlen("A"), 0);
     return 0;
 }
+
 
 bool is_ship_sunk(Board *board, int piece_id) {
     for (int i = 0; i < board->height; i++) {
@@ -387,15 +447,31 @@ int process_shoot_action(int connectionFd, Board *opponentBoard, char **shotHist
     send(connectionFd, response, strlen(response), 0);
 
     if (remaining_ships == 0) {
+ 
         send(opponentConnectionFd, "H 0", strlen("H 0"), 0);
-        // Wait for acknowledgment
-        recv(opponentConnectionFd, response, BUFFER_SIZE, 0);
+
+        char ack[BUFFER_SIZE];
+        int bytes_received = recv(opponentConnectionFd, ack, BUFFER_SIZE, 0);
+        if (bytes_received <= 0) {
+            perror("[Server] Failed to receive acknowledgment from losing player");
+          
+        }
+
+  
         send(connectionFd, "H 1", strlen("H 1"), 0);
-        return 1;
+
+        bytes_received = recv(connectionFd, ack, BUFFER_SIZE, 0);
+        if (bytes_received <= 0) {
+            perror("[Server] Failed to receive acknowledgment from winning player");
+          
+        }
+
+        return 1; 
     }
 
-    return 0;
+    return 0; 
 }
+
 
 void append_shot_entry(char *response, char shot, int row, int col) {
     int len = strlen(response);
@@ -435,24 +511,30 @@ bool wait_for_begin_packet(int conn_fd, int *board_width, int *board_height, int
 
         if (strncmp(buffer, "B", 1) == 0) {
             if (is_player1) {
+
                 char remaining_chars;
                 int parsed = sscanf(buffer, "B %d %d%c", board_width, board_height, &remaining_chars);
                 if (parsed == 2 && *board_width >= 10 && *board_height >= 10) {
                     send(conn_fd, "A", strlen("A"), 0);
-                    printf("[Server] Valid Begin packet received. Board size: %dx%d\n", *board_width, *board_height);
+                    printf("[Server] Valid Begin packet received from Player 1. Board size: %dx%d\n", *board_width, *board_height);
                     return true;
                 } else {
                     send(conn_fd, "E 200", strlen("E 200"), 0);
-                    fprintf(stderr, "[Server] Invalid board dimensions or malformed Begin packet\n");
+                    fprintf(stderr, "[Server] Invalid board dimensions or malformed Begin packet from Player 1\n");
                 }
             } else {
+
                 if (strcmp(buffer, "B") == 0 || strcmp(buffer, "B\n") == 0) {
                     send(conn_fd, "A", strlen("A"), 0);
                     printf("[Server] Valid Begin packet received from Player 2.\n");
                     return true;
-                } else {
+                } else if (strncmp(buffer, "B ", 2) == 0) {
                     send(conn_fd, "E 200", strlen("E 200"), 0);
                     fprintf(stderr, "[Server] Invalid Begin packet format for Player 2\n");
+                } else {
+
+                    send(conn_fd, "E 100", strlen("E 100"), 0);
+                    fprintf(stderr, "[Server] Invalid packet type received during Begin phase from Player 2\n");
                 }
             }
         } else if (strcmp(buffer, "F") == 0 || strcmp(buffer, "F\n") == 0) {
@@ -466,6 +548,7 @@ bool wait_for_begin_packet(int conn_fd, int *board_width, int *board_height, int
         }
     }
 }
+
 
 void wait_for_initialize_packet(int conn_fd, Board *player_board, int opponent_fd) {
     char buffer[BUFFER_SIZE];
@@ -494,36 +577,44 @@ void wait_for_initialize_packet(int conn_fd, Board *player_board, int opponent_f
 }
 
 bool process_turn(int conn_fd, Board *opponent_board, char **shot_history, bool sunk_ships[], int opponent_fd) {
-    char buffer[BUFFER_SIZE];
-    memset(buffer, 0, BUFFER_SIZE);
-    int bytes_received = recv(conn_fd, buffer, BUFFER_SIZE, 0);
+    while (true) {
+        char buffer[BUFFER_SIZE];
+        memset(buffer, 0, BUFFER_SIZE);
+        int bytes_received = recv(conn_fd, buffer, BUFFER_SIZE, 0);
 
-    if (bytes_received <= 0) {
-        perror("[Server] Failed to receive packet from player");
-        return false;
-    }
-
-    buffer[bytes_received] = '\0';
-
-    if (strncmp(buffer, "S ", 2) == 0) {
-        int result = process_shoot_action(conn_fd, opponent_board, shot_history, sunk_ships, opponent_fd, buffer);
-        if (result == 1) {
-            printf("[Server] Game over! Player wins.\n");
-            return false; // End game
+        if (bytes_received <= 0) {
+            perror("[Server] Failed to receive packet from player");
+            return false;
         }
-    } else if (strcmp(buffer, "Q") == 0 || strcmp(buffer, "Q\n") == 0) {
-        handle_query_packet(conn_fd, shot_history, opponent_board, sunk_ships);
-    } else if (strcmp(buffer, "F") == 0 || strcmp(buffer, "F\n") == 0) {
-        send(conn_fd, "H 0", strlen("H 0"), 0);
-        send(opponent_fd, "H 1", strlen("H 1"), 0);
-        printf("[Server] Player forfeited. Game over.\n");
-        return false;
-    } else {
-        send(conn_fd, "E 102", strlen("E 102"), 0);
-        fprintf(stderr, "[Server] Invalid command received during player's turn\n");
+
+        buffer[bytes_received] = '\0';
+
+        if (strncmp(buffer, "S ", 2) == 0) {
+            int result = process_shoot_action(conn_fd, opponent_board, shot_history, sunk_ships, opponent_fd, buffer);
+            if (result == 1) {
+                return false;
+            } else if (result == 0) {
+
+                break;
+            }
+           
+        } else if (strcmp(buffer, "Q") == 0 || strcmp(buffer, "Q\n") == 0) {
+            handle_query_packet(conn_fd, shot_history, opponent_board, sunk_ships);
+           
+        } else if (strcmp(buffer, "F") == 0 || strcmp(buffer, "F\n") == 0) {
+            send(conn_fd, "H 0", strlen("H 0"), 0);
+            char ack[BUFFER_SIZE];
+            recv(conn_fd, ack, BUFFER_SIZE, 0);
+            send(opponent_fd, "H 1", strlen("H 1"), 0);
+            recv(opponent_fd, ack, BUFFER_SIZE, 0);
+            return false; 
+        } else {
+            send(conn_fd, "E 102", strlen("E 102"), 0);
+        }
     }
-    return true;
+    return true; 
 }
+
 
 void game_session(int player1ConnectionFd, int player2ConnectionFd) {
     int boardWidth, boardHeight;
